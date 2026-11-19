@@ -443,6 +443,7 @@ const store = { prefs:{}, me:null, clients:[], content:[], tasks:[], team:[], ac
 const IDF = t => ({team_members:"email", client_ai:"client_id", settings:"key"}[t] || "id");
 const COLL = {clients:"clients", content_items:"content", tasks:"tasks", team_members:"team", client_access:"access", comments:"comments", settings:"settings", client_ai:"ai"};
 const LIVE = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
+const MAIL_FUNCTIONS = false;   // zet op true zodra de Supabase-functies "invite-user" en "notify-mention" bestaan
 let sb = null;
 
 /* ---- Demo: echte gegevens uit Notion (Content Kalender + Enirgy-actieplan) ---- */
@@ -1549,6 +1550,7 @@ function loginView(){
 function autosize(){ document.querySelectorAll("textarea.cell, textarea.ttl").forEach(t => { t.style.height = "auto"; t.style.height = t.scrollHeight + "px"; }); }
 async function invite(email, kind = "client", clientId = null){
   if(!LIVE){ toast(`Toegevoegd. In de demo gaat er geen mail uit; live krijgt ${email} meteen een uitnodiging.`); return; }
+  if(!MAIL_FUNCTIONS){ toast(`Toegevoegd. ${email} kan nu inloggen op de planner met dit e-mailadres.`); return; }
   const {error} = await sb.functions.invoke("invite-user", {body:{email, kind, client_id: clientId}});
   let msg = error?.message; if(error){ try{ msg = (await error.context.json()).error || msg; }catch(_){} }
   toast(error ? `Toegevoegd, maar de mail kon niet worden verstuurd (${msg}).` : `Uitnodiging verstuurd naar ${email}`);
@@ -2750,6 +2752,7 @@ async function sendComment(){
   if(!mentions.length) return;
   const names = mentions.map(labelFor).join(", ");
   if(!LIVE){ toast(`${names} ${mentions.length > 1 ? "zien" : "ziet"} dit bij Vermeldingen — live krijgen ze ook een mail.`); return; }
+  if(!MAIL_FUNCTIONS){ toast(`${names} ${mentions.length > 1 ? "zien" : "ziet"} dit bij Vermeldingen.`); return; }
   const {error} = await sb.functions.invoke("notify-mention", {body:{comment_id: row.id}});
   toast(error ? `Geplaatst, maar de mail naar ${names} kon niet worden verstuurd.` : `Mail verstuurd naar ${names}`);
 }

@@ -854,6 +854,8 @@ const ui = {
   gen: null,                  // {id, kind:"image"|"anim", stage, prompt, opts, ...} beeld maken met AI
   ai: null,                   // {id, busy, list, err}
   uploading: false,
+  loadErr: null,              // inloggen lukte, maar laden mislukte (live)
+  loginErr: null,             // foutmelding uit de inloglink
   month: (()=>{ const d=new Date(); return new Date(d.getFullYear(), d.getMonth(), 1); })(),
   moments: true,              // inhaakmomenten tonen
   fopen: null,                // welk filtermenu open staat ("c" of "t")
@@ -875,7 +877,7 @@ function render(){
   const a = document.activeElement;
   if(a && root.contains(a) && a.matches("input[type=text],input:not([type]),textarea,input[type=email]") && a.dataset.live !== "0"){ pending = true; return; }
   pending = false;
-  if(!store.me){ root.innerHTML = loginView(); return; }
+  if(!store.me){ root.innerHTML = ui.loadErr ? loadErrView() : loginView(); return; }
   const noAccess = !store.me.isTeam && store.clients.length === 0;
   if(!store.me.isTeam && ui.route === "overview" && store.clients[0]) ui.route = store.clients[0].id;
   if(ui.route !== "overview" && ui.route !== "mentions" && !clientById(ui.route)) ui.route = store.me.isTeam ? "overview" : (store.clients[0]?.id || "overview");
@@ -1526,9 +1528,17 @@ function modal(){
   return "";
 }
 
+function loadErrView(){
+  return `<div class="login"><div class="box">
+    <h1>Inloggen gelukt, laden mislukt</h1>
+    <div class="ai-err" style="margin-bottom:14px">${esc(ui.loadErr)}</div>
+    <div style="display:flex;gap:8px"><button class="btn primary" data-act="retry">Opnieuw proberen</button><button class="btn" data-act="logout">Uitloggen</button></div>
+  </div></div>`;
+}
 function loginView(){
   return `<div class="login"><div class="box">
     <div class="brand" style="padding:0 0 18px"><img src="${LOGO_LIGHT}" alt="PlusLeads" style="height:30px;filter:none"><small>Contentplanner</small></div>
+    ${ui.loginErr ? `<div class="ai-err" style="margin-bottom:14px">${esc(ui.loginErr)}</div>` : ""}
     <div id="login-step">
       <div class="frow"><label>E-mailadres</label><input class="inp" type="email" id="login-email" data-live="0" placeholder="naam@bedrijf.nl"></div>
       <button class="btn primary" style="width:100%" data-act="login">Stuur inloglink</button>
@@ -1674,6 +1684,8 @@ root.addEventListener("click", async e => {
       removeRow("team_members","team", id); return; }
     case "logout": await sb.auth.signOut(); location.reload(); return;
     case "login": return sendLink();
+    case "verify-code": return verifyCode(t.closest("[data-act]").dataset.email);
+    case "retry": ui.loadErr = null; await reload(); return;
   }
   // Klik op een lege dag = nieuw item op die dag
   const day = t.closest("[data-date]");
@@ -1740,6 +1752,7 @@ document.addEventListener("keydown", e => {
   if(e.key === "Escape" && (ui.drawer || ui.modal)){ document.activeElement?.blur?.(); ui.drawer = null; ui.modal = null; ui.ai = null; ui.gen = null; draft = null; render(); }
   if(e.key === "Enter" && e.target.matches("textarea.cell[data-f=title], textarea.ttl")){ e.preventDefault(); e.target.blur(); }
   if(e.key === "Enter" && e.target.id === "login-email") sendLink();
+  if(e.key === "Enter" && e.target.id === "login-code") verifyCode(document.querySelector('[data-act="verify-code"]')?.dataset.email);
 });
 
 /* =====================================================================
@@ -2750,14 +2763,26 @@ function openItem(kind, id){
 /* =====================================================================
    OPSTARTEN
    ===================================================================== */
-async function reload(){ try{ await api.load(); } catch(err){ console.error(err); toast("Laden mislukt"); } render(); }
+async function reload(){
+  try{ await api.load(); ui.loadErr = null; }
+  catch(err){ console.error(err); ui.loadErr = [err?.message || String(err), err?.hint, err?.code ? `(code ${err.code})` : ""].filter(Boolean).join(" "); toast("Laden mislukt"); }
+  render();
+}
 
 async function sendLink(){
   const email = document.getElementById("login-email").value.trim().toLowerCase();
   if(!/^\S+@\S+\.\S+$/.test(email)) return toast("Vul een geldig e-mailadres in");
   const {error} = await sb.auth.signInWithOtp({email, options:{emailRedirectTo: location.origin + location.pathname}});
   if(error) return toast(error.message);
-  document.getElementById("login-step").innerHTML = `<p>Check je mail: we hebben een inloglink gestuurd naar <b>${esc(email)}</b>.</p>`;
+  document.getElementById("login-step").innerHTML = `<p>Check je mail: we hebben een inloglink gestuurd naar <b>${esc(email)}</b>.</p>
+    <div class="frow"><label>Werkt de link niet? Vul dan de code uit de mail in</label><input class="inp" id="login-code" data-live="0" inputmode="numeric" autocomplete="one-time-code" placeholder="Code uit de mail"></div>
+    <button class="btn primary" style="width:100%" data-act="verify-code" data-email="${esc(email)}">Inloggen met code</button>`;
+}
+async function verifyCode(email){
+  const token = (document.getElementById("login-code")?.value || "").replace(/\s+/g, "");
+  if(!token) return toast("Vul de code uit de mail in");
+  const {error} = await sb.auth.verifyOtp({email, token, type:"email"});
+  if(error) toast(error.message === "Token has expired or is invalid" ? "Deze code klopt niet of is verlopen. Vraag een nieuwe aan." : error.message);
 }
 
 function mergeRealtime(table, p){
@@ -2783,8 +2808,15 @@ function openFromHash(){
 }
 async function start(){
   if(!LIVE){ window.__planner = {ui, store, animEnv, animTimeline, drawAnim}; await reload(); initSample(); return; }
+  const hp = new URLSearchParams(location.hash.replace(/^#/, ""));
+  if(hp.get("error")){
+    ui.loginErr = hp.get("error_code") === "otp_expired"
+      ? "Deze inloglink is verlopen of al gebruikt. Soms opent een mailprogramma de link alvast. Vraag een nieuwe link aan, of log in met de code uit de mail."
+      : (hp.get("error_description") || hp.get("error"));
+  }
   const { createClient } = await import("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm");
   sb = createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+  if(ui.loginErr) history.replaceState(null, "", location.pathname + location.search);
   const { data:{ session } } = await sb.auth.getSession();
   if(!session){ try{ if(location.hash) localStorage.setItem("planner-open", location.hash); }catch(_){} store.me = null; render(); }
   else { await reload(); openFromHash(); }

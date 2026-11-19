@@ -353,6 +353,15 @@
   a.fl:hover{text-decoration:underline}
   .fl.add{color:var(--muted)}.fl.add:hover{color:var(--accent)}
 
+  .hd{display:flex;align-items:center;padding:0 2px;height:34px}
+  .hd .mv{padding:8px 4px}
+  .hd .del{opacity:.35;padding:8px 5px;font-size:13px}
+  .tbl tr:hover .hd .del{opacity:1}
+  .dwrap.urg input{-webkit-text-fill-color:var(--red)}
+  .drawer .dwrap.urg input[type=date].field{padding-left:28px}
+  .ev .tm{width:12px;height:12px;color:var(--red);flex:none}
+  .ev.urg{border-color:#f3c4c4;color:var(--red);background:#fff7f7}
+
   /* Modal */
   .modal{position:fixed;left:50%;top:8vh;transform:translateX(-50%);width:min(480px,94vw);max-height:84vh;overflow:auto;background:#fff;border-radius:16px;z-index:21;box-shadow:0 12px 40px rgba(0,0,0,.18);padding:22px}
   .modal h2{margin:0 0 16px;font-size:20px;font-family:var(--head);font-weight:700}
@@ -439,9 +448,9 @@ const byNatural = (a,b) => a.localeCompare(b, "nl", {numeric:true, sensitivity:"
 /* =====================================================================
    DATA — één store, twee bronnen: demo (in het geheugen) of Supabase.
    ===================================================================== */
-const store = { prefs:{}, me:null, clients:[], content:[], tasks:[], team:[], access:[], ai:[], comments:[], settings:[], seen:"1970-01-01T00:00:00Z" };
-const IDF = t => ({team_members:"email", client_ai:"client_id", settings:"key"}[t] || "id");
-const COLL = {clients:"clients", content_items:"content", tasks:"tasks", team_members:"team", client_access:"access", comments:"comments", settings:"settings", client_ai:"ai"};
+const store = { prefs:{}, me:null, clients:[], content:[], tasks:[], team:[], access:[], ai:[], comments:[], settings:[], profiles:[], profilesOk:false, seen:"1970-01-01T00:00:00Z" };
+const IDF = t => ({team_members:"email", client_ai:"client_id", settings:"key", profiles:"email"}[t] || "id");
+const COLL = {clients:"clients", content_items:"content", tasks:"tasks", team_members:"team", client_access:"access", comments:"comments", settings:"settings", client_ai:"ai", profiles:"profiles"};
 const LIVE = !!(SUPABASE_URL && SUPABASE_ANON_KEY);
 const MAIL_FUNCTIONS = false;   // zet op true zodra de Supabase-functies "invite-user" en "notify-mention" bestaan
 let sb = null;
@@ -567,13 +576,14 @@ function demoSeed(){
   const ago = h => new Date(Date.now() - h*36e5).toISOString();
   const comments = [
     {id:uid(), client_id:E, item_type:"content", item_id:reel.id, author_email:"collega@plusleads.nl", body:"@Jij kun jij de video van de installatie nog aanleveren? Dan schrijf ik de tekst.", mentions:[ME], internal:true, created_at:ago(3)},
-    {id:uid(), client_id:E, item_type:"content", item_id:bf.id, author_email:ME, body:"@contact@enirgy.nl wil jij checken of het kortingspercentage klopt voordat we hem inplannen?", mentions:["contact@enirgy.nl"], internal:false, created_at:ago(26)},
+    {id:uid(), client_id:E, item_type:"content", item_id:bf.id, author_email:ME, body:"@Contactpersoon Enirgy wil jij checken of het kortingspercentage klopt voordat we hem inplannen?", mentions:["contact@enirgy.nl"], internal:false, created_at:ago(26)},
     {id:uid(), client_id:E, item_type:"content", item_id:bf.id, author_email:"contact@enirgy.nl", body:"Klopt! Kunnen we ook noemen dat de actie t/m 1 december loopt? @Jij", mentions:[ME], internal:false, created_at:ago(2)},
     {id:uid(), client_id:E, item_type:"task", item_id:brand.id, author_email:"collega@plusleads.nl", body:"Logo-varianten staan in de gedeelde map. @Jij wil jij de kleurcodes nog vastleggen?", mentions:[ME], internal:true, created_at:ago(30)},
     {id:uid(), client_id:E, item_type:"task", item_id:lead.id, author_email:ME, body:"Afspraak staat voor donderdag. @Collega neem jij de CRM-vragen mee?", mentions:["collega@plusleads.nl"], internal:true, created_at:ago(50)},
   ];
   return {
     clients, content, tasks, comments, seen: {}, settings: [], prefs: {},
+    profiles: [{email:"contact@enirgy.nl", name:"Contactpersoon Enirgy"}, {email:"info@gripopstroom.nl", name:"Contactpersoon Grip op stroom"}],
     team: [{email:ME, name:"Jij", role:"admin"}, {email:"collega@plusleads.nl", name:"Collega", role:"member"}],
     access: [{id:uid(), email:"contact@enirgy.nl", client_id:E}, {id:uid(), email:"info@gripopstroom.nl", client_id:G}],
     ai: [
@@ -753,6 +763,7 @@ const api = {
       store.content = DEMO.content.filter(i => i.client_id ? ok(i.client_id) : true);
       store.tasks = DEMO.tasks.filter(t => ok(t.client_id));
       store.team = DEMO.team;
+      store.profiles = DEMO.profiles || []; store.profilesOk = true;
       store.access = isTeam ? DEMO.access : DEMO.access.filter(a => a.client_id === demoAs);
       store.ai = isTeam ? DEMO.ai : [];
       store.settings = isTeam ? DEMO.settings : [];
@@ -762,7 +773,7 @@ const api = {
       return;
     }
     const email = (await sb.auth.getUser()).data.user?.email?.toLowerCase();
-    const [team, clients, content, tasks, access, ai, comments, state] = await Promise.all([
+    const [team, clients, content, tasks, access, ai, comments, state, profiles] = await Promise.all([
       sb.from("team_members").select("*"),
       sb.from("clients").select("*").order("name"),
       sb.from("content_items").select("*"),
@@ -771,12 +782,14 @@ const api = {
       sb.from("client_ai").select("*"),
       sb.from("comments").select("*").order("created_at"),
       sb.from("user_state").select("*").eq("email", email).maybeSingle(),
+      sb.from("profiles").select("*"),
     ]);
     for(const r of [team,clients,content,tasks,access,ai,comments]) if(r.error) throw r.error;
     const mine = team.data.find(t => t.email === email);
     store.me = {email, isTeam: !!mine, isAdmin: mine?.role === "admin"};
     store.team = team.data; store.clients = clients.data; store.content = content.data;
     store.tasks = tasks.data; store.access = access.data; store.ai = ai.data; store.comments = comments.data;
+    store.profiles = profiles.error ? [] : profiles.data; store.profilesOk = !profiles.error;
     store.seen = state.data?.mentions_seen_at || "1970-01-01T00:00:00Z";
     store.prefs = state.data?.prefs || {};
   },
@@ -825,6 +838,7 @@ function strip(table, r){
     settings:["key","value"],
     tasks:["id","client_id","title","status","deadline","owner_email","phase","notes","position","files"],
     team_members:["email","name","role","phone","title","avatar"], client_access:["id","email","client_id"],
+    profiles:["email","name","title","phone","avatar"],
   }[table];
   const o = Object.fromEntries(cols.map(c => [c, r[c] ?? null]));
   if(table === "client_ai"){ for(const k of ["prompt","image_prompt","anim_prompt","video_prompt","summary"]) o[k] ??= ""; o.files ??= []; }
@@ -909,7 +923,7 @@ function logo(c, lg){
 
 /* ---- Avatars, bestanden ---- */
 function avHtml(email, bg, size){
-  const m = store.team.find(t => t.email === email), st = size ? `width:${size}px;height:${size}px;border-radius:50%;flex:none;display:grid;place-items:center;color:#fff;font-size:${Math.round(size*.42)}px;font-weight:600;` : "";
+  const m = store.team.find(t => t.email === email) || profileOf(email), st = size ? `width:${size}px;height:${size}px;border-radius:50%;flex:none;display:grid;place-items:center;color:#fff;font-size:${Math.round(size*.42)}px;font-weight:600;` : "";
   const ini = esc(((m?.name || email || "?")[0] || "?").toUpperCase());
   return m?.avatar ? `<span class="av img" style="${st}background:${bg}"><img src="${esc(m.avatar)}" alt=""></span>` : `<span class="av" style="${st}background:${bg}">${ini}</span>`;
 }
@@ -942,7 +956,7 @@ function sidebar(){
           ${DEMO.clients.map(c=>`<option value="${c.id}" ${demoAs===c.id?"selected":""}>Klant: ${esc(c.name)}</option>`).join("")}
         </select><button class="linkbtn" data-act="demo-reset" style="color:#8d96ab;margin-top:6px">Demo terugzetten naar begin</button></div>` : ""}
       ${team ? `<button class="invite" data-act="team">+ Collega uitnodigen</button><button class="nav-item" data-act="team">👥 Collega's <span style="margin-left:auto;color:#8d96ab;font-size:12px">${store.team.length}</span></button>` : ""}
-      ${team ? (() => { const m = store.team.find(t => t.email === store.me.email); return `<button class="nav-item pchip" data-act="profile" title="Mijn profiel bewerken">${avHtml(store.me.email, "var(--accent)", 30)}<span><b>${esc(m?.name || "Mijn profiel")}</b><small>Profiel bewerken</small></span></button>`; })() : `<div class="who">${esc(store.me.email)}</div>`}
+      ${(() => { const m = store.team.find(t => t.email === store.me.email) || profileOf(store.me.email); return `<button class="nav-item pchip" data-act="profile" title="Mijn profiel bewerken">${avHtml(store.me.email, "var(--accent)", 30)}<span><b>${esc(m?.name || "Mijn profiel")}</b><small>Profiel bewerken</small></span></button>`; })()}
       ${LIVE ? `<button class="nav-item" data-act="logout">Uitloggen</button>` : ""}
     </div>
   </aside>`;
@@ -993,6 +1007,7 @@ function clientPage(c){
 /* ---- Tabelkolommen: volgorde en breedte per gebruiker ---- */
 const COLS = {
   prod: [
+    {k:"hd",     label:"",           w:62,  min:62,  fixed:true, first:true},
     {k:"title",  label:"Titel",      w:300, min:140},
     {k:"client", label:"Klant",      w:140, min:90,  allOnly:true},
     {k:"date",   label:"Publicatie", w:136, min:110},
@@ -1003,6 +1018,7 @@ const COLS = {
     {k:"open",   label:"",           w:108, min:108, fixed:true},
   ],
   task: [
+    {k:"hd",     label:"",                 w:62,  min:62,  fixed:true, first:true},
     {k:"status", label:"Status",           w:112, min:90},
     {k:"title",  label:"Taak",             w:340, min:160},
     {k:"deadline",label:"Deadline",        w:140, min:110},
@@ -1010,17 +1026,16 @@ const COLS = {
     {k:"phase",  label:"Fase",             w:150, min:100},
     {k:"files",  label:"Bestanden",        w:170, min:100},
     {k:"notes",  label:"Notities",         w:240, min:100},
-    {k:"mv",     label:"",                 w:34,  min:34,  fixed:true},
     {k:"cmt",    label:"",                 w:52,  min:52,  fixed:true},
-    {k:"del",    label:"",                 w:34,  min:34,  fixed:true},
   ],
 };
 function colsFor(table, all){
   const pref = store.prefs?.cols?.[table] || {}, defs = COLS[table].filter(c => !c.allOnly || all);
-  const order = [...(pref.order || [])].filter(k => defs.some(c => c.k === k));
-  for(const c of defs) if(!order.includes(c.k)) order.splice(c.fixed ? order.length : Math.min(order.length, defs.indexOf(c)), 0, c.k);
+  const firstKeys = defs.filter(c => c.first).map(c => c.k);
+  const order = [...(pref.order || [])].filter(k => defs.some(c => c.k === k) && !firstKeys.includes(k));
+  for(const c of defs) if(!c.first && !order.includes(c.k)) order.splice(c.fixed ? order.length : Math.min(order.length, defs.indexOf(c)), 0, c.k);
   const fixedLast = order.filter(k => defs.find(c => c.k === k).fixed);
-  return [...order.filter(k => !fixedLast.includes(k)), ...fixedLast].map(k => { const c = defs.find(x => x.k === k); return {...c, w: Math.max(c.min, pref.w?.[k] || c.w)}; });
+  return [...firstKeys, ...order.filter(k => !fixedLast.includes(k)), ...fixedLast].map(k => { const c = defs.find(x => x.k === k); return {...c, w: Math.max(c.min, pref.w?.[k] || c.w)}; });
 }
 function tableHead(table, cols){
   const ed = true;
@@ -1132,9 +1147,10 @@ function production(items, all){
       const m = missing(i), c = clientById(i.client_id), first = (i.media||[])[0], n = commentCount("content", i.id);
       const thumb = first ? (first.type?.startsWith("video/") ? `<video class="pthumb" src="${esc(mediaSrc(first))}#t=0.5" muted preload="metadata"></video>` : `<img class="pthumb" src="${esc(mediaSrc(first))}" alt="">`) : "";
       const cell = {
+        hd:     `<td class="c-hd">${ed ? `<div class="hd"><span class="mv" draggable="true" data-mvc="${i.id}" title="Sleep naar een andere status">⠿</span><button class="del" data-act="del-item" data-id="${i.id}" title="Verwijderen">🗑</button></div>` : ""}</td>`,
         title:  `<td class="c-title"><textarea class="cell" rows="1" data-f="title" placeholder="Zonder titel" ${ed?"":"readonly"}>${esc(i.title)}</textarea></td>`,
         client: `<td class="c-client"><div class="cell cl">${logo(c)}<span>${esc(c?.name||"")}</span></div></td>`,
-        date:   `<td class="c-date"><input class="cell ${i.start_date?"":"blank"}" type="date" data-f="start_date" value="${esc(i.start_date||"")}" ${dis}></td>`,
+        date:   `<td class="c-date"><div class="dwrap ${urgDate(i)?"urg":""}">${urgDate(i) ? TIMER : ""}<input class="cell ${i.start_date?"":"blank"}" type="date" data-f="start_date" value="${esc(i.start_date||"")}" ${dis}></div></td>`,
         format: `<td class="c-format"><select class="cell" data-f="format" ${dis}><option value=""></option>${FORMATS.map(o=>`<option ${o===i.format?"selected":""}>${o}</option>`).join("")}</select></td>`,
         status: `<td class="c-status"><select class="pill ${statusClass(i.status)}" data-f="status" ${dis}>${CONTENT_STATUS.map(o=>`<option ${o===(i.status||"Te doen")?"selected":""}>${o}</option>`).join("")}</select></td>`,
         beeld:  `<td data-open="${i.id}" class="clk c-beeld"><div class="cell mcell">${thumb}${done ? "" : `<span class="bdg ${m.beeld?"miss":"ok"}">${m.beeld?"Mist":"✓"}</span>`}</div></td>`,
@@ -1143,7 +1159,7 @@ function production(items, all){
       };
       return `<tr data-item="${i.id}">${cols.map(c => cell[c.k]).join("")}</tr>`;
     }).join("");
-    return `<div class="grp">
+    return `<div class="grp" data-sgrp="${st}">
       <div class="grp-h"><span class="pill ${statusClass(st)}" style="margin:0 6px 0 0">${st}</span><span class="count">${its.length}</span></div>
       ${!its.length ? `<div class="empty" style="padding:6px 8px 4px">Geen items</div>` : `<div class="tscroll"><table class="tbl ptbl" data-table="prod" style="width:${tableWidth(cols)}px">
         ${tableHead("prod", cols)}
@@ -1192,6 +1208,7 @@ function calendar(items, all, clientId){
       <span class="title">${MONTHS[first.getMonth()]} ${first.getFullYear()}</span>
       <span class="spacer"></span>
       <button class="chip ${ui.moments?"on":""}" data-act="moments">Inhaakmomenten</button>
+      ${canEdit() ? `<button class="btn" data-act="manage-moments">Beheren</button>` : ""}
       ${canEdit() ? `<button class="btn primary" data-act="new-content" data-date="${TODAY}">+ Nieuw</button>` : ""}
     </div>
     <div class="cal"><div class="cal-dow">${DOW.map(d=>`<div>${d}</div>`).join("")}</div>${weeks}</div>`;
@@ -1199,7 +1216,8 @@ function calendar(items, all, clientId){
 function ev(i){
   const c = i.client_id ? clientById(i.client_id) : null;
   if(!c) return `<button class="ev moment" data-open="${i.id}" title="${esc(i.title)}"><span class="t">${esc(i.title||"Zonder titel")}</span></button>`;
-  return `<button class="ev" data-open="${i.id}" title="${esc(c.name)} — ${esc(i.title)}" style="border-left:3px solid ${esc(c.color)}"><span class="dot" style="background:${statusColor(i.status)}"></span><span class="t">${esc(i.title||"Zonder titel")}</span></button>`;
+  const u = urgDate(i);
+  return `<button class="ev ${u ? "urg" : ""}" data-open="${i.id}" title="${esc(c.name)} — ${esc(i.title)}${u ? " (deze week of te laat)" : ""}" style="border-left:3px solid ${esc(c.color)}">${u ? TIMER : ""}<span class="dot" style="background:${statusColor(i.status)}"></span><span class="t">${esc(i.title||"Zonder titel")}</span></button>`;
 }
 
 /* ---- Actieplan (tabel, inline bewerkbaar zoals Notion) ---- */
@@ -1227,6 +1245,7 @@ function actionPlan(c){
     const rows = ts.map(t => {
       const urgent = t.status !== "Gereed" && !!t.deadline && t.deadline <= WEEK_END;
       const cell = {
+        hd:       `<td class="c-hd">${ed ? `<div class="hd"><span class="mv" draggable="true" data-mv="${t.id}" title="Sleep naar een andere fase">⠿</span><button class="del" data-act="del-task" data-id="${t.id}" title="Verwijderen">🗑</button></div>` : ""}</td>`,
         status:   `<td class="c-status"><select class="pill ${statusClass(t.status)}" data-f="status" ${dis}>${TASK_STATUS.map(s=>`<option ${s===t.status?"selected":""}>${s}</option>`).join("")}</select></td>`,
         title:    `<td class="c-title"><textarea class="cell" rows="1" data-f="title" ${ed?"":"readonly"}>${esc(t.title)}</textarea></td>`,
         deadline: `<td class="c-deadline"><div class="dwrap ${urgent?"urg":""}">${urgent ? TIMER : ""}<input class="cell ${t.deadline?"":"blank"}" type="date" data-f="deadline" value="${esc(t.deadline||"")}" ${dis}></div></td>`,
@@ -1250,7 +1269,7 @@ function actionPlan(c){
       ${ed?`<button class="addrow" data-act="new-task" data-phase="${esc(p)}">+ Nieuwe taak</button>`:""}
     </div>`;
   }).join("");
-  return taskFilterBar(allTasks) + (groups || `<div class="empty">${filtersOn("t") ? "Geen taken met deze filters." : "Nog geen taken."}</div>`) + (ed ? `<button class="btn" data-act="new-phase" style="margin-top:4px">+ Fase toevoegen</button>` : "");
+  return taskFilterBar(allTasks) + (groups || `<div class="empty">${filtersOn("t") ? "Geen taken met deze filters." : "Nog geen taken."}</div>`) + (ed ? `<div style="display:flex;gap:8px;margin-top:4px"><button class="btn" data-act="new-phase">+ Fase toevoegen</button><button class="btn" data-act="import-plan">⬆ Actieplan importeren</button></div>` : "");
 }
 
 /* ---- Contentitem openen (zoals een Notion-pagina) ---- */
@@ -1269,7 +1288,7 @@ function drawer(){
       ${ed ? `<select class="field" data-f="client_id"><option value="">— Algemeen (iedereen) —</option>${store.clients.map(c=>`<option value="${c.id}" ${c.id===i.client_id?"selected":""}>${esc(c.name)}</option>`).join("")}</select>`
            : `<span class="field">${esc(clientById(i.client_id)?.name || "Algemeen")}</span>`}</div></div>
     <div class="prop"><label>Publicatiedatum</label><div class="val">
-      <input class="field ${i.start_date?"":"blank"}" type="date" data-f="start_date" value="${esc(i.start_date||"")}" ${dis}>
+      <div class="dwrap ${urgDate(i)?"urg":""}">${urgDate(i) ? TIMER : ""}<input class="field ${i.start_date?"":"blank"}" type="date" data-f="start_date" value="${esc(i.start_date||"")}" ${dis}></div>
       ${(i.end_date || ed) ? `<span style="color:var(--muted)">t/m</span><input class="field ${i.end_date?"":"blank"}" type="date" data-f="end_date" value="${esc(i.end_date||"")}" ${dis}>` : ""}
     </div></div>
     <div class="prop"><label>Contenttype</label><div class="val"><select class="field" data-f="content_type" ${dis}>${opt(CONTENT_TYPES, i.content_type)}</select></div></div>
@@ -1319,10 +1338,12 @@ const commentCount = (type, id) => store.comments.filter(c => c.item_type === ty
 function mentionCandidates(cid){
   const me = store.me.email;
   const team = store.team.map(t => ({email:t.email, label:t.name || t.email, who:"PlusLeads"}));
-  const contacts = store.access.filter(a => a.client_id === cid && !isTeamEmail(a.email)).map(a => ({email:a.email, label:a.email, who:clientById(cid)?.name || "Klant"}));
+  const contacts = store.access.filter(a => a.client_id === cid && !isTeamEmail(a.email)).map(a => ({email:a.email, label:labelFor(a.email), who:clientById(cid)?.name || "Klant"}));
   return [...team, ...contacts].filter(c => c.email !== me);
 }
-const labelFor = email => isTeamEmail(email) ? memberName(email) : email;
+const profileOf = email => store.profiles.find(p => p.email === email);
+const nameFromEmail = e => { const l = String(e || "").split("@")[0].replace(/[._-]+/g, " ").trim(); return l ? l.replace(/\b\w/g, c => c.toUpperCase()) : String(e || ""); };
+const labelFor = email => isTeamEmail(email) ? memberName(email) : (profileOf(email)?.name || nameFromEmail(email));
 function fmtTime(ts){
   const d = new Date(ts), now = new Date();
   const hm = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
@@ -1438,7 +1459,7 @@ function genPanel(i){
 }
 function aiPanel(i){
   const a = ui.ai; if(!a || a.id !== i.id) return "";
-  if(a.busy) return `<div class="ai-box"><span class="spin"></span> ${esc(a.step || "Claude bekijkt het beeld…")}</div>`;
+  if(a.busy) return `<div class="ai-box"><span class="spin"></span> ${esc(a.step || "ChatGPT bekijkt het beeld…")}</div>`;
   if(a.stage === "edit") return `<div class="ai-box">
     ${a.err ? `<div class="ai-err">${esc(a.err)}</div>` : ""}
     <div class="ai-lbl">✨ Prompt voor ${esc(clientById(i.client_id)?.name || "dit bericht")} <span>— aanpassingen worden onthouden voor deze klant</span></div>
@@ -1464,7 +1485,7 @@ function modal(){
   if(!ui.modal) return "";
   if(ui.modal.kind === "client"){
     const d = draft; const isNew = !store.clients.some(c => c.id === d.id);
-    const acc = isNew ? (d.pending || []).map(e => ({id:e, email:e})) : store.access.filter(a => a.client_id === d.id);
+    const acc = isNew ? (d.pending || []).map(e => ({id:e, email:e, name:d.pendingNames?.[e]})) : store.access.filter(a => a.client_id === d.id).map(a => ({...a, name:profileOf(a.email)?.name}));
     return `<div class="scrim" data-act="close-modal"></div>
     <div class="modal wide">
       <h2>${isNew ? "Nieuwe klant" : "Klant bewerken"}</h2>
@@ -1480,8 +1501,8 @@ function modal(){
       </div></div>
 
       ${`<div class="frow"><label>Mag meekijken (alleen deze klant)</label>
-        <div class="list">${acc.length ? acc.map(a=>`<div class="list-row">${esc(a.email)}<button class="x" data-act="${isNew ? "del-pending" : "del-access"}" data-id="${esc(a.id)}">✕</button></div>`).join("") : `<div class="list-row" style="color:var(--muted)">Nog niemand</div>`}</div>
-        <div class="inline"><input class="inp" type="email" data-live="0" id="acc-email" placeholder="naam@klant.nl"><button class="btn" data-act="add-access">Toevoegen</button></div>
+        <div class="list">${acc.length ? acc.map(a=>`<div class="list-row">${a.name ? `<b>${esc(a.name)}</b> <span style="color:var(--muted)">· ${esc(a.email)}</span>` : esc(a.email)}<button class="x" data-act="${isNew ? "del-pending" : "del-access"}" data-id="${esc(a.id)}">✕</button></div>`).join("") : `<div class="list-row" style="color:var(--muted)">Nog niemand</div>`}</div>
+        <div class="inline"><input class="inp" data-live="0" id="acc-name" placeholder="Naam" style="flex:1"><input class="inp" type="email" data-live="0" id="acc-email" placeholder="naam@klant.nl" style="flex:1.4"><button class="btn" data-act="add-access">Toevoegen</button></div>
         <div class="hint">${isNew ? "Krijgt een uitnodiging zodra je de klant opslaat en ziet alleen deze klant." : "Krijgt een uitnodigingsmail en ziet alleen " + esc(d.name||"deze klant") + "."}</div>
       </div>`}
       <div class="frow"><label>Info over de klant <span style="color:var(--muted)">(alleen zichtbaar voor het PlusLeads-team)</span></label>
@@ -1493,6 +1514,43 @@ function modal(){
         ${isNew ? "<span></span>" : `<button class="btn danger" data-act="del-client">Klant verwijderen</button>`}
         <span><button class="btn" data-act="close-modal">Annuleren</button> <button class="btn primary" data-act="save-client">Opslaan</button></span>
       </div>
+    </div>`;
+  }
+  if(ui.modal.kind === "moments"){
+    const list = store.content.filter(i => !i.client_id).sort((a,b) => (a.start_date || "9999").localeCompare(b.start_date || "9999"));
+    const fd = s => { const d = parse(s); return d ? `${d.getDate()} ${MONTHS[d.getMonth()].slice(0,3)} ${d.getFullYear()}` : ""; };
+    return `<div class="scrim" data-act="close-modal"></div>
+    <div class="modal wide">
+      <h2>Inhaakmomenten</h2>
+      <div class="frow"><label>Nieuw inhaakmoment</label>
+        <div class="inline" style="margin-top:0"><input class="inp" id="mo-title" data-live="0" placeholder="Naam, bijv. Dag van de Thee" style="flex:2"><input class="inp" type="date" id="mo-start" data-live="0" style="flex:1" title="Datum"><input class="inp" type="date" id="mo-end" data-live="0" style="flex:1" title="Einddatum (optioneel)"></div>
+        <div class="inline"><button class="btn primary" data-act="add-moment">Toevoegen</button></div>
+        <div class="hint">Het tweede datumvak (einddatum) is optioneel, voor een periode zoals een themaweek.</div>
+      </div>
+      <div class="frow"><label>Of importeer er veel tegelijk uit een bestand</label>
+        <label class="fadd">⬆ Excel- of CSV-bestand kiezen<input type="file" accept=".xlsx,.xls,.csv,.txt" data-act="upload-moments" hidden></label>
+        <div class="hint">Kolommen: <b>Naam</b>, <b>Datum</b>, <b>Einddatum</b> (optioneel) en <b>Omschrijving</b> (optioneel). De eerste rij bevat de kopjes. Dubbele regels worden overgeslagen.</div>
+      </div>
+      <div class="frow"><label>${list.length} inhaakmoment${list.length === 1 ? "" : "en"}</label>
+        <div class="list" style="max-height:300px;overflow:auto">${list.map(i => `<div class="list-row"><span style="color:var(--muted);width:130px;flex:none">${i.start_date ? fd(i.start_date) + (i.end_date && i.end_date > i.start_date ? " – " + fd(i.end_date) : "") : "geen datum"}</span><span>${esc(i.title || "Zonder titel")}</span><button class="x" data-act="del-moment" data-id="${i.id}" title="Verwijderen">✕</button></div>`).join("") || `<div class="list-row" style="color:var(--muted)">Nog geen inhaakmomenten</div>`}</div>
+      </div>
+      <div class="actions">${list.length ? `<button class="btn danger" data-act="del-all-moments">Alles verwijderen</button>` : "<span></span>"}<button class="btn" data-act="close-modal">Klaar</button></div>
+    </div>`;
+  }
+  if(ui.modal.kind === "plan"){
+    const c = clientById(ui.route);
+    return `<div class="scrim" data-act="close-modal"></div>
+    <div class="modal wide">
+      <h2>Actieplan importeren${c ? " — " + esc(c.name) : ""}</h2>
+      <div class="frow"><label>Kies een bestand</label>
+        <label class="fadd">⬆ Excel-, CSV- of tekstbestand kiezen<input type="file" accept=".xlsx,.xls,.csv,.txt,.md" data-act="upload-plan" hidden></label>
+        <div class="hint">Excel of CSV met de kolommen <b>Fase</b> (of Maand) en <b>Taak</b>, en eventueel <b>Status</b>, <b>Deadline</b>, <b>Verantwoordelijke</b> en <b>Notities</b>. Per fase wordt vanzelf een tabel gemaakt. Heeft je Excel meerdere tabbladen en geen kolom Fase, dan wordt elk tabblad een fase.</div>
+      </div>
+      <div class="frow"><label>Of plak de tekst van het plan</label>
+        <textarea class="inp" id="plan-paste" data-live="0" rows="7" placeholder="Plak hier je actieplan, bijvoorbeeld uit Word of Notion. ChatGPT zet het om in fases en taken."></textarea>
+        <div class="hint">Heb je een Word- of PDF-bestand? Kopieer de tekst eruit en plak hem hier.</div>
+      </div>
+      <div class="actions"><span></span><span><button class="btn" data-act="close-modal">Annuleren</button> <button class="btn primary" data-act="plan-run">Tekst importeren</button></span></div>
     </div>`;
   }
   if(ui.modal.kind === "profile"){
@@ -1508,7 +1566,7 @@ function modal(){
       <div class="frow"><label>Naam</label><input class="inp" data-live="0" data-d="name" value="${esc(d.name||"")}" placeholder="Jouw naam"></div>
       <div class="frow"><label>Functie</label><input class="inp" data-live="0" data-d="title" value="${esc(d.title||"")}" placeholder="Bijv. Marketeer"></div>
       <div class="frow"><label>Telefoonnummer</label><input class="inp" data-live="0" data-d="phone" value="${esc(d.phone||"")}" placeholder="06 12345678"></div>
-      <div class="frow"><label>E-mailadres</label><input class="inp" type="email" data-live="0" data-d="email" value="${esc(d.email||"")}" placeholder="naam@plusleads.io" ${LIVE ? "disabled" : ""}>${LIVE ? `<div class="hint">In de live-versie is je e-mailadres gekoppeld aan je login; vraag de beheerder om het te wijzigen.</div>` : ""}</div>
+      <div class="frow"><label>E-mailadres</label><input class="inp" type="email" data-live="0" data-d="email" value="${esc(d.email||"")}" placeholder="naam@plusleads.io" ${LIVE || !store.me.isTeam ? "disabled" : ""}>${LIVE || !store.me.isTeam ? `<div class="hint">Je e-mailadres is gekoppeld aan je login en kun je hier niet wijzigen.</div>` : ""}</div>
       <div class="actions"><span></span><span><button class="btn" data-act="close-modal">Annuleren</button> <button class="btn primary" data-act="save-profile">Opslaan</button></span></div>
     </div>`;
   }
@@ -1620,7 +1678,7 @@ root.addEventListener("click", async e => {
     case "del-cfile": { const k = +t.closest("[data-act]").dataset.k; syncDraftName();
       if(!await ask("Weet je zeker dat je dit bestand wilt verwijderen?")) return;
       draft.files = (draft.files || []).filter((_,x) => x !== k); render(); return; }
-    case "profile": { const m = store.team.find(x => x.email === store.me.email) || {email:store.me.email}; draft = {...m}; ui.modal = {kind:"profile"}; render(); return; }
+    case "profile": { const m = store.team.find(x => x.email === store.me.email) || profileOf(store.me.email) || {email:store.me.email}; draft = {...m}; ui.modal = {kind:"profile"}; render(); return; }
     case "avatar-clear": syncDraftName(); draft.avatar = null; render(); return;
     case "save-profile": return saveProfile();
     case "toggle-admin": { const id = t.closest("[data-act]").dataset.id, m = store.team.find(x => x.email === id);
@@ -1671,9 +1729,10 @@ root.addEventListener("click", async e => {
     case "add-access": {
       const v = document.getElementById("acc-email").value.trim().toLowerCase();
       if(!/^\S+@\S+\.\S+$/.test(v)) return toast("Vul een geldig e-mailadres in");
-      if(!store.clients.some(c => c.id === draft.id)){ if(!(draft.pending ||= []).includes(v)) draft.pending.push(v); syncDraftName(); render(); return; }
+      const nm = (document.getElementById("acc-name")?.value || "").trim();
+      if(!store.clients.some(c => c.id === draft.id)){ if(!(draft.pending ||= []).includes(v)) draft.pending.push(v); if(nm) (draft.pendingNames ||= {})[v] = nm; syncDraftName(); render(); return; }
       if(store.access.some(a => a.email===v && a.client_id===draft.id)) return;
-      syncDraftName(); patch("client_access","access",{id:uid(), email:v, client_id:draft.id}, true); render(); invite(v, "client", draft.id); return;
+      syncDraftName(); patch("client_access","access",{id:uid(), email:v, client_id:draft.id}, true); if(nm) setContactName(v, nm); render(); invite(v, "client", draft.id); return;
     }
     case "del-access": { syncDraftName(); const id = t.closest("[data-act]").dataset.id, a = store.access.find(x => x.id === id);
       if(!await ask(`Weet je zeker dat je ${a?.email || "deze persoon"} wilt verwijderen? Diegene kan dan niet meer meekijken.`)) return;
@@ -1690,6 +1749,21 @@ root.addEventListener("click", async e => {
       removeRow("team_members","team", id); return; }
     case "logout": await sb.auth.signOut(); location.reload(); return;
     case "login": return sendLink();
+    case "del-item": { const id = t.closest("[data-act]").dataset.id, it = store.content.find(x => x.id === id);
+      if(await ask("Weet je zeker dat je dit bericht wilt verwijderen? Het beeld bij dit bericht verdwijnt ook.")){ if(ui.drawer?.id === id) ui.drawer = null; removeFiles(it?.media); removeRow("content_items","content",id); } return; }
+    case "manage-moments": ui.modal = {kind:"moments"}; render(); return;
+    case "add-moment": {
+      const title = (document.getElementById("mo-title")?.value || "").trim(), d1 = document.getElementById("mo-start")?.value || "", d2 = document.getElementById("mo-end")?.value || "";
+      if(!title) return toast("Geef het inhaakmoment een naam");
+      if(!d1) return toast("Kies een datum");
+      patch("content_items","content",{id:uid(), client_id:null, title, start_date:d1, end_date: d2 && d2 > d1 ? d2 : null, content_type:"Inhaakmoment", format:null, status:null, body:"", media:[]}, true);
+      render(); toast("Inhaakmoment toegevoegd"); return; }
+    case "del-moment": { const id = t.closest("[data-act]").dataset.id, it = store.content.find(x => x.id === id);
+      if(await ask(`Weet je zeker dat je "${it?.title || "dit inhaakmoment"}" wilt verwijderen?`)) removeRow("content_items","content",id); return; }
+    case "del-all-moments": { const ids = store.content.filter(i => !i.client_id).map(i => i.id);
+      if(await ask(`Weet je zeker dat je alle ${ids.length} inhaakmomenten wilt verwijderen?`)) await removeMany("content_items","content",ids); return; }
+    case "import-plan": ui.modal = {kind:"plan"}; render(); return;
+    case "plan-run": return importPlan({text: document.getElementById("plan-paste")?.value || ""});
     case "verify-code": return verifyCode(t.closest("[data-act]").dataset.email);
     case "retry": ui.loadErr = null; await reload(); return;
   }
@@ -1725,6 +1799,8 @@ root.addEventListener("change", e => {
     const [k, f] = el.dataset.flt.split("."); ui.flt[k][f] = el.value; render(); return; }
   if(el.dataset.gopt){ const k = el.dataset.gopt; ui.gen.opts[k] = el.type === "checkbox" ? el.checked : (k === "dur" ? +el.value : el.value); ui.gen.env = null; return; }
   if(el.dataset.act === "upload-task"){ const files = [...el.files]; el.value = ""; return addFiles("task", store.tasks.find(x => x.id === ui.drawer.id), files); }
+  if(el.dataset.act === "upload-moments"){ const f = el.files[0]; el.value = ""; return importMoments(f); }
+  if(el.dataset.act === "upload-plan"){ const f = el.files[0]; el.value = ""; return importPlan({file: f}); }
   if(el.dataset.act === "upload-client"){ const files = [...el.files]; el.value = ""; return addClientFiles(files); }
   if(el.dataset.act === "avatar"){ return readAvatar(el.files[0]); }
   if(el.dataset.act === "upload"){ const files = [...el.files]; el.value = ""; return uploadMedia(store.content.find(x=>x.id===ui.drawer.id), files); }
@@ -1826,9 +1902,13 @@ function readAvatar(file){
 }
 async function saveProfile(){
   const q = k => (document.querySelector(`[data-d="${k}"]`)?.value ?? "").trim();
-  const me = store.team.find(t => t.email === store.me.email); if(!me) return;
   const row = {name:q("name"), title:q("title"), phone:q("phone"), avatar: draft.avatar || null};
   if(!row.name) return toast("Vul je naam in");
+  if(!store.me.isTeam){      // klant: eigen profiel (naam, functie, telefoon, foto)
+    patch("profiles","profiles",{email: store.me.email, ...row}, true);
+    ui.modal = null; draft = null; render(); toast("Profiel opgeslagen"); return;
+  }
+  const me = store.team.find(t => t.email === store.me.email); if(!me) return;
   const email = LIVE ? me.email : q("email").toLowerCase();
   if(!/^\S+@\S+\.\S+$/.test(email)) return toast("Vul een geldig e-mailadres in");
   const changed = email !== me.email;
@@ -1887,11 +1967,11 @@ async function saveClient(){
   syncDraftName();
   if(!draft.name.trim()) return toast("Geef de klant een naam");
   const isNew = !store.clients.some(c => c.id === draft.id);
-  const {ai_prompt, image_prompt, anim_prompt, pending, info, files, ...client} = draft;
+  const {ai_prompt, image_prompt, anim_prompt, pending, pendingNames, info, files, ...client} = draft;
   const clientRow = {...client, name:client.name.trim()};
   if(isNew && pending?.length){ try{ await api.save("clients", strip("clients", clientRow)); }catch(err){ return fail(err); } }
   patch("clients","clients",clientRow, true);
-  for(const e of (isNew ? pending || [] : [])){ patch("client_access","access",{id:uid(), email:e, client_id:client.id}, true); invite(e, "client", client.id); }
+  for(const e of (isNew ? pending || [] : [])){ patch("client_access","access",{id:uid(), email:e, client_id:client.id}, true); if(pendingNames?.[e]) setContactName(e, pendingNames[e]); invite(e, "client", client.id); }
   const clean = (k, v) => (v||"").trim() === PROMPT_KINDS[k].def().trim() ? "" : (v||"").trim();
   const old = store.ai.find(a => a.client_id === client.id) || {};
   const row = {client_id:client.id, prompt:clean("ai_prompt", ai_prompt), image_prompt:clean("image_prompt", image_prompt), anim_prompt:clean("anim_prompt", anim_prompt)};
@@ -2102,8 +2182,8 @@ async function suggest(item){
     let list;
     if(LIVE){
       const frames = await framesFor(item, 8);
-      ui.ai.step = "Claude bekijkt het beeld…"; render();
-      const data = await askClaude(prompt + JSON_RULE, frames);
+      ui.ai.step = "ChatGPT bekijkt het beeld…"; render();
+      const data = await askGPT(prompt + JSON_RULE, frames, 3000);
       list = data?.suggestions;
     } else {
       const lim = await SAMPLE.limits().catch(() => null);
@@ -2195,7 +2275,7 @@ root.addEventListener("pointerdown", e => {
 async function askClaude(prompt, frames, maxTokens, docs = []){
   if(LIVE){
     const {data, error} = await sb.functions.invoke("ask-claude", {body:{ prompt, max_tokens: maxTokens, images: await Promise.all(frames.map(blobToB64)), documents: docs }});
-    if(error){ let msg = error.message; try{ msg = (await error.context.json()).error || msg; }catch(_){} throw new Error(msg); }
+    if(error) await fnFail(error);
     return data?.json;
   }
   if(!SAMPLE) throw new Error("Claude is hier niet beschikbaar.");
@@ -2223,7 +2303,7 @@ async function genImage(item){
     let reference = null;
     if(g.opts.ref){ const first = (item.media||[]).find(m => m.type?.startsWith("image/")); const fr = first ? await framesFor({media:[first]}, 1) : []; if(fr[0]) reference = await blobToB64(fr[0]); }
     const {data, error} = await sb.functions.invoke("generate-image", {body:{ prompt:resolvePrompt(item, "image_prompt", g.prompt), size:g.opts.size, reference }});
-    if(error){ let msg = error.message; try{ msg = (await error.context.json()).error || msg; }catch(_){} throw new Error(msg); }
+    if(error) await fnFail(error);
     if(!data?.image) throw new Error("Geen afbeelding ontvangen. Probeer het opnieuw.");
     if(g.url) URL.revokeObjectURL(g.url);
     g.blob = b64ToBlob(data.image, "image/png"); g.url = URL.createObjectURL(g.blob); g.stage = "result";
@@ -2732,7 +2812,7 @@ function mentionPopup(ta){
   const item = itemByKey(key);
   const list = mentionCandidates(item?.client_id).filter(c => c.label.toLowerCase().includes(q) || c.email.includes(q)).slice(0, 6);
   if(!list.length){ pop.hidden = true; return; }
-  pop.innerHTML = list.map((c,k) => `<div class="mp-item ${k===0?"on":""}" data-label="${esc(c.label)}"><b>${esc(c.label)}</b><span>${esc(c.who)}${c.label !== c.email ? " · " + esc(c.email) : ""}</span></div>`).join("");
+  pop.innerHTML = list.map((c,k) => `<div class="mp-item ${k===0?"on":""}" data-label="${esc(c.label)}"><b>${esc(c.label)}</b><span>${esc(c.who)}</span></div>`).join("");
   pop.hidden = false;
 }
 function insertMention(ta, label){
@@ -2770,6 +2850,247 @@ function openItem(kind, id){
 /* =====================================================================
    OPSTARTEN
    ===================================================================== */
+/* =====================================================================
+   BULK-IMPORT — inhaakmomenten en actieplan uit Excel, CSV of tekst
+   ===================================================================== */
+const urgDate = i => !!(i.client_id && i.start_date && !["Gereed","Ingepland"].includes(i.status || "Te doen") && i.start_date <= WEEK_END);
+
+let xlsxPromise = null;
+function loadXlsx(){
+  if(window.XLSX) return Promise.resolve(window.XLSX);
+  return xlsxPromise ||= new Promise((res, rej) => {
+    const sc = document.createElement("script");
+    sc.src = "https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js";
+    sc.onload = () => res(window.XLSX);
+    sc.onerror = () => { xlsxPromise = null; rej(new Error("De Excel-lezer kon niet laden. Sla het bestand op als CSV, of probeer het later opnieuw.")); };
+    document.head.appendChild(sc);
+  });
+}
+function parseCSV(text){
+  text = String(text).replace(/^﻿/, "");
+  const first = text.split(/\r?\n/, 1)[0] || "";
+  const delim = [";", "\t", ","].map(d => [d, first.split(d).length]).sort((a, b) => b[1] - a[1])[0][0];
+  const rows = []; let row = [], cur = "", q = false;
+  for(let k = 0; k < text.length; k++){
+    const c = text[k];
+    if(q){ if(c === '"'){ if(text[k+1] === '"'){ cur += '"'; k++; } else q = false; } else cur += c; }
+    else if(c === '"') q = true;
+    else if(c === delim){ row.push(cur); cur = ""; }
+    else if(c === "\n" || c === "\r"){ if(c === "\r" && text[k+1] === "\n") k++; row.push(cur); cur = ""; rows.push(row); row = []; }
+    else cur += c;
+  }
+  if(cur !== "" || row.length){ row.push(cur); rows.push(row); }
+  return rows.filter(r => r.some(c => String(c).trim() !== ""));
+}
+async function readSheets(file){
+  if(/\.(xlsx|xls|xlsm|ods)$/i.test(file.name || "")){
+    const X = await loadXlsx();
+    const wb = X.read(await file.arrayBuffer(), {type:"array"});
+    return wb.SheetNames.map(n => ({name:n, rows: X.utils.sheet_to_json(wb.Sheets[n], {header:1, raw:true, defval:""})}));
+  }
+  return [{name:"", rows: parseCSV(await file.text())}];
+}
+const norm = v => String(v ?? "").toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+function mapHeader(row, aliases){
+  const map = {};
+  row.forEach((cell, idx) => {
+    const h = norm(cell); if(!h) return;
+    for(const [field, list] of Object.entries(aliases)){
+      if(map[field] !== undefined) continue;
+      if(list.some(a => h === a || h.startsWith(a + " "))){ map[field] = idx; break; }
+    }
+  });
+  return map;
+}
+const MONTH_NUM = {jan:1, feb:2, mar:3, maa:3, mrt:3, apr:4, mei:5, may:5, jun:6, jul:7, aug:8, sep:9, okt:10, oct:10, nov:11, dec:12};
+function toIsoDate(v){
+  if(v === null || v === undefined || v === "") return null;
+  if(v instanceof Date) return isNaN(v) ? null : iso(v);
+  if(typeof v === "number"){
+    if(v > 20000 && v < 80000){ const d = new Date(Date.UTC(1899, 11, 30) + Math.round(v) * 864e5); return `${d.getUTCFullYear()}-${pad(d.getUTCMonth()+1)}-${pad(d.getUTCDate())}`; }
+    return null;
+  }
+  const t = String(v).trim().toLowerCase(); if(!t) return null;
+  let m = t.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/); if(m) return `${m[1]}-${pad(+m[2])}-${pad(+m[3])}`;
+  m = t.match(/^(\d{1,2})[-\/. ]+(\d{1,2}|[a-z]+)\.?[-\/. ]+(\d{2,4})/);
+  if(m){
+    const mo = /^\d+$/.test(m[2]) ? +m[2] : MONTH_NUM[m[2].slice(0, 3)];
+    let y = +m[3]; if(y < 100) y += 2000;
+    if(mo >= 1 && mo <= 12 && +m[1] >= 1 && +m[1] <= 31) return `${y}-${pad(mo)}-${pad(+m[1])}`;
+  }
+  return null;
+}
+function normStatus(sv){
+  const t = norm(sv);
+  if(/^(gereed|klaar|done|afgerond|voltooid|compleet)/.test(t)) return "Gereed";
+  if(/^(bezig|in uitvoering|lopend|doing|in progress|onderweg|gestart)/.test(t)) return "Bezig";
+  return "Te doen";
+}
+function ownerFrom(sv){
+  const t = norm(sv); if(!t) return null;
+  const m = store.team.find(x => norm(x.email) === t || norm(x.name) === t || norm((x.email || "").split("@")[0]) === t || norm(x.name).split(" ")[0] === t);
+  return m?.email || null;
+}
+async function bulkSave(table, coll, rows){
+  if(!rows.length) return;
+  for(const r of rows) store[coll].push(r);
+  render();
+  try{
+    if(!LIVE){ DEMO[COLL[table]].push(...rows.map(r => ({...r}))); saveDemo(); }
+    else { const {error} = await sb.from(table).upsert(rows.map(r => strip(table, r))); if(error) throw error; }
+  }catch(err){ fail(err); }
+}
+async function removeMany(table, coll, ids){
+  const idf = IDF(table), set = new Set(ids);
+  store[coll] = store[coll].filter(x => !set.has(x[idf]));
+  render();
+  try{
+    if(!LIVE){ DEMO[COLL[table]] = DEMO[COLL[table]].filter(x => !set.has(x[idf])); saveDemo(); }
+    else { const {error} = await sb.from(table).delete().in(idf, ids); if(error) throw error; }
+  }catch(err){ fail(err); }
+}
+function setContactName(email, name){
+  const p = profileOf(email);
+  if(p?.name) return;
+  patch("profiles","profiles",{email, name, title:p?.title || "", phone:p?.phone || "", avatar:p?.avatar || null}, true);
+}
+
+const MOMENT_COLS = {
+  title:["naam","titel","inhaakmoment","onderwerp","title","moment","event","dag"],
+  start:["datum","start","startdatum","begin","date","van","vanaf"],
+  end:["einddatum","eind","tot","t m","tot en met","end"],
+  body:["omschrijving","beschrijving","tekst","notities","toelichting","body","opmerking"],
+};
+async function importMoments(file){
+  if(!file) return;
+  try{
+    const sheets = await readSheets(file);
+    const existing = new Set(store.content.filter(i => !i.client_id).map(i => `${(i.title || "").toLowerCase()}|${i.start_date || ""}`));
+    const rows = []; let skipped = 0;
+    for(const sh of sheets){
+      const data = sh.rows.filter(r => r.some(c => String(c ?? "").trim() !== ""));
+      if(!data.length) continue;
+      let map = mapHeader(data[0], MOMENT_COLS), begin = 1;
+      if(map.title === undefined || map.start === undefined){ map = {title:0, start:1, end:2, body:3}; begin = 0; }
+      for(const r of data.slice(begin)){
+        const g = f => map[f] === undefined ? "" : r[map[f]];
+        const title = String(g("title") ?? "").trim(), d1 = toIsoDate(g("start")), d2 = toIsoDate(g("end"));
+        if(!title || !d1){ skipped++; continue; }
+        const key = `${title.toLowerCase()}|${d1}`;
+        if(existing.has(key)){ skipped++; continue; }
+        existing.add(key);
+        rows.push({id:uid(), client_id:null, title, start_date:d1, end_date: d2 && d2 > d1 ? d2 : null, content_type:"Inhaakmoment", format:null, status:null, body:String(g("body") ?? "").trim(), media:[]});
+      }
+    }
+    if(!rows.length) return toast(skipped ? "Geen nieuwe inhaakmomenten gevonden (rijen zonder naam of datum, of al aanwezig)." : "Geen inhaakmomenten gevonden in dit bestand.");
+    await bulkSave("content_items","content",rows);
+    toast(`${rows.length} inhaakmoment${rows.length === 1 ? "" : "en"} toegevoegd${skipped ? ` (${skipped} overgeslagen)` : ""}`);
+  }catch(e){ toast(e.message || "Importeren mislukt"); }
+}
+
+const TASK_COLS = {
+  phase:["fase","maand","periode","phase","categorie","onderdeel","hoofdstuk","month"],
+  title:["taak","task","actie","titel","activiteit","werkzaamheid","omschrijving","title","to do"],
+  status:["status","voortgang"],
+  deadline:["deadline","datum","einddatum","uiterlijk","due","streefdatum","opleverdatum"],
+  owner:["verantwoordelijke","verantwoordelijk","eigenaar","owner","wie","toegewezen","assignee"],
+  notes:["notities","opmerking","opmerkingen","toelichting","notes","commentaar"],
+};
+function tasksFromSheets(sheets, requireHeader){
+  const out = [];
+  for(const sh of sheets){
+    const rows = sh.rows.filter(r => r.some(c => String(c ?? "").trim() !== ""));
+    if(!rows.length) continue;
+    let map = mapHeader(rows[0], TASK_COLS), begin = 1;
+    if(map.title === undefined){
+      if(requireHeader) continue;
+      begin = 0; map = rows[0].length >= 2 ? {phase:0, title:1, status:2, deadline:3, owner:4, notes:5} : {title:0};
+    }
+    for(const r of rows.slice(begin)){
+      const g = f => map[f] === undefined ? "" : r[map[f]];
+      const title = String(g("title") ?? "").trim(); if(!title) continue;
+      const ownerTxt = String(g("owner") ?? "").trim(), owner = ownerFrom(ownerTxt);
+      const notes = [String(g("notes") ?? "").trim(), ownerTxt && !owner ? `Verantwoordelijke: ${ownerTxt}` : ""].filter(Boolean).join("\n");
+      const phase = String(g("phase") ?? "").trim() || (sheets.length > 1 ? sh.name : "") || "Nieuwe taken";
+      out.push({phase, title, status:normStatus(g("status")), deadline:toIsoDate(g("deadline")), owner_email:owner, notes});
+    }
+  }
+  return out;
+}
+async function tasksFromText(txt){
+  const names = store.team.map(t => t.name || t.email).join(", ");
+  const prompt = `Je krijgt een actieplan, planning of afsprakenlijst. Zet die om in losse taken, gegroepeerd per fase of maand.
+Regels:
+- Behoud de volgorde en de fasenamen uit de tekst (bijvoorbeeld "Maand 1 — Merkconcept"). Is er geen indeling, gebruik dan één fase met de naam "Nieuwe taken".
+- Eén concrete taak per item, in de woorden van de tekst. Verzin niets.
+- status is "Te doen", "Bezig" of "Gereed" (standaard "Te doen").
+- deadline als YYYY-MM-DD, anders leeg.
+- owner alleen als een van deze namen genoemd wordt: ${names}. Anders leeg.
+- notes: korte extra info uit de tekst, anders leeg.
+Antwoord alleen als JSON in deze vorm: {"tasks":[{"phase":"","title":"","status":"Te doen","deadline":"","owner":"","notes":""}]}
+
+TEKST:
+${txt.slice(0, 60000)}`;
+  const res = await askText(prompt, [], 8000);
+  const list = Array.isArray(res) ? res : res?.tasks;
+  return (list || []).filter(x => x && String(x.title || "").trim()).map(x => ({
+    phase:String(x.phase || "").trim() || "Nieuwe taken", title:String(x.title).trim(), status:normStatus(x.status),
+    deadline:toIsoDate(x.deadline), owner_email:ownerFrom(x.owner), notes:String(x.notes || "").trim(),
+  }));
+}
+async function importPlan({file, text}){
+  const cid = ui.route, c = clientById(cid); if(!c) return;
+  let tasks = [];
+  try{
+    if(file && /\.(xlsx|xls|xlsm|ods|csv)$/i.test(file.name || "")){
+      toast("Bestand lezen…");
+      tasks = tasksFromSheets(await readSheets(file));
+    } else {
+      const txt = file ? await file.text() : (text || "");
+      if(!txt.trim()) return toast("Kies een bestand of plak eerst tekst");
+      tasks = tasksFromSheets([{name:"", rows: parseCSV(txt)}], true);
+      if(!tasks.length){ toast("ChatGPT leest het plan…"); tasks = await tasksFromText(txt); }
+    }
+  }catch(e){ return toast(e.message || "Importeren mislukt"); }
+  if(!tasks.length) return toast("Ik kon geen taken vinden in dit bestand.");
+  const phases = [...new Set(tasks.map(t => t.phase))];
+  if(!await ask(`Gevonden: ${tasks.length} taken in ${phases.length} fase${phases.length === 1 ? "" : "s"}. Toevoegen aan het actieplan van ${c.name}?`, "Toevoegen")) return;
+  const max = Math.max(0, ...store.tasks.filter(t => t.client_id === cid).map(t => t.position || 0));
+  const rows = tasks.map((t, i) => ({id:uid(), client_id:cid, phase:t.phase, title:t.title, status:t.status, deadline:t.deadline, owner_email:t.owner_email, notes:t.notes, position:max + 1 + i, files:[]}));
+  ui.modal = null; ui.tab = "actieplan";
+  await bulkSave("tasks","tasks",rows);
+  toast(`${rows.length} taken in ${phases.length} fase${phases.length === 1 ? "" : "s"} toegevoegd`);
+}
+
+// Rijen in Productie slepen naar een andere status
+function moveContent(id, status){
+  const it = store.content.find(x => x.id === id); if(!it || (it.status || "Te doen") === status) return render();
+  patch("content_items","content",{id, status}, true); render(); toast(`Status: ${status}`);
+}
+let rowDrag = null;
+root.addEventListener("dragstart", e => { const h = e.target.closest?.("[data-mvc]"); if(!h) return; rowDrag = h.dataset.mvc; e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", rowDrag); });
+root.addEventListener("dragover", e => { if(!rowDrag) return; const g = e.target.closest?.("[data-sgrp]"); if(!g) return; e.preventDefault();
+  document.querySelectorAll(".grp.dropping").forEach(x => x !== g && x.classList.remove("dropping")); g.classList.add("dropping"); });
+root.addEventListener("drop", e => { if(!rowDrag) return; const g = e.target.closest?.("[data-sgrp]"); if(!g) return; e.preventDefault();
+  const id = rowDrag; rowDrag = null; moveContent(id, g.dataset.sgrp); });
+root.addEventListener("dragend", () => { rowDrag = null; document.querySelectorAll(".grp.dropping").forEach(x => x.classList.remove("dropping")); });
+
+/* ---- ChatGPT (tekst) en foutmeldingen van de Supabase-functies ---- */
+async function fnFail(error){
+  let msg = error.message;
+  try{ msg = (await error.context.json()).error || msg; }catch(_){}
+  if(/Failed to send a request|FunctionsFetchError|Failed to fetch/i.test(`${msg} ${error.name || ""}`))
+    msg = "De koppeling met de AI-dienst staat nog niet aan. Zet de bijbehorende Supabase-functie online (zie de handleiding).";
+  throw new Error(msg);
+}
+async function askGPT(prompt, frames, maxTokens){
+  if(!LIVE) return askClaude(prompt, frames || [], maxTokens);
+  const {data, error} = await sb.functions.invoke("ask-gpt", {body:{ prompt, max_tokens: maxTokens, images: await Promise.all((frames || []).map(blobToB64)) }});
+  if(error) await fnFail(error);
+  return data?.json;
+}
+const askText = (prompt, frames, maxTokens) => askGPT(prompt, frames, maxTokens);
+
 async function reload(){
   try{ await api.load(); ui.loadErr = null; }
   catch(err){ console.error(err); ui.loadErr = [err?.message || String(err), err?.hint, err?.code ? `(code ${err.code})` : ""].filter(Boolean).join(" "); toast("Laden mislukt"); }
@@ -2829,7 +3150,7 @@ async function start(){
   else { await reload(); openFromHash(); }
   sb.auth.onAuthStateChange(async (ev, s) => { if(ev === "SIGNED_IN" && !store.me){ await reload(); openFromHash(); } if(ev === "SIGNED_OUT"){ store.me = null; render(); } });
   const ch = sb.channel("planner");
-  for(const t of ["clients","content_items","tasks","team_members","client_access","client_ai","comments"])
+  for(const t of ["clients","content_items","tasks","team_members","client_access","client_ai","comments", ...(store.profilesOk ? ["profiles"] : [])])
     ch.on("postgres_changes", {event:"*", schema:"public", table:t}, p => mergeRealtime(t, p));
   ch.subscribe();
 }
